@@ -14,22 +14,50 @@ public class ObjectDetector : MonoBehaviour
     public IReadOnlyList<DetectionType> Detections => _detections;
     private void Start()
     {
-        var model = Resources.Load<ModelAsset>("Models/yolo11n");
-        var r = ModelLoader.Load(model);
-        _worker = new Worker(r, BackendType.GPUCompute);
-        Debug.Log("Object detector initialized with model: " + model.name);
-        
-        var text = Resources.Load<TextAsset>("Models/coco-classes");
-        _labels = text.text.Split('\n');
-        Debug.Log("Labels: " + _labels.Length);
-        Debug.Log("Mirrored: " + _cameraApp.cam?.videoVerticallyMirrored);
-
+        // Allocate the inference buffers before anything that can fail, so Update
+        // never hands nulls to TextureConverter.ToTensor.
         _input = new RenderTexture(640, 640, 0);
         _tensor = new Tensor<float>(new TensorShape(1, 3, 640, 640));
 
+        // Resources.Load returns the imported ModelAsset, not the .onnx file. If the
+        // ONNX importer failed on this editor the asset is missing and this is null.
+        var model = Resources.Load<ModelAsset>("Models/yolo11n");
+        if (model == null)
+        {
+            Debug.LogError("ObjectDetector: no ModelAsset at Resources/Models/yolo11n. Select yolo11n.onnx in the Project window and check the Inspector for import errors. Detection is disabled.");
+            return;
+        }
+
+        var text = Resources.Load<TextAsset>("Models/coco-classes");
+        if (text == null)
+        {
+            Debug.LogError("ObjectDetector: no label file at Resources/Models/coco-classes.txt. Detection is disabled.");
+            return;
+        }
+        _labels = text.text.Split('\n');
+        Debug.Log("Labels: " + _labels.Length);
+
+        try
+        {
+            var r = ModelLoader.Load(model);
+            _worker = new Worker(r, BackendType.GPUCompute);
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError("ObjectDetector: could not load " + model.name + ": " + e.Message + ". Detection is disabled.");
+            _worker = null;
+            return;
+        }
+
+        Debug.Log("Object detector initialized with model: " + model.name);
+        Debug.Log("Mirrored: " + _cameraApp?.cam?.videoVerticallyMirrored);
     }
     private void Update()
     {
+        // No worker means Start bailed out above; nothing to run.
+        if (_worker == null)
+            return;
+
         WebCamTexture cam = _cameraApp.cam;
         if (cam == null || !cam.isPlaying || cam.width <= 16)
             return;
